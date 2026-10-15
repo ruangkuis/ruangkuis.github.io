@@ -395,7 +395,7 @@
     const CATEGORY_SECURITY = 'Keamanan Jaringan';
     const CATEGORY_WIRELESS = 'Teknologi Jaringan dan Nirkabel';
     const CATEGORY_TKA = 'TKA';
-    const TKA_TOKEN = 'tka2026';
+    const TKA_TOKEN = 'TKJ2026';
     const QUESTION_BANKS = {
         [CATEGORY_CONFIGURATION]: configurationQuestionsData,
         [CATEGORY_SECURITY]: securityQuestionsData,
