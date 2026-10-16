@@ -1,0 +1,343 @@
+    let questionsData = [];
+    let currentQuestionIndex = 0;
+    let studentData = {};
+    let quizTimerInterval;
+    let splitScreenCheckTimeout;
+    let quizActive = false;
+    let proctorIncidents = [];
+    const QUIZ_DURATION_SECONDS = 60 * 60;
+    const ANDROID_SPLIT_SCREEN_THRESHOLD = 0.75;
+    const CATEGORY_CONFIGURATION = 'Pemasangan dan Konfigurasi Perangkat Jaringan Komputer';
+    const CATEGORY_SECURITY = 'Keamanan Jaringan';
+    const CATEGORY_WIRELESS = 'Teknologi Jaringan dan Nirkabel';
+    const CATEGORY_TKA = 'TKA';
+    const CATEGORY_QUESTION_COUNTS = {
+        [CATEGORY_CONFIGURATION]: 25,
+        [CATEGORY_SECURITY]: 25,
+        [CATEGORY_WIRELESS]: 25,
+        [CATEGORY_TKA]: 50
+    };
+
+    function shuffledQuestions(questionBank) {
+        const shuffled = questionBank.slice();
+        for (let index = shuffled.length - 1; index > 0; index--) {
+            const randomIndex = Math.floor(Math.random() * (index + 1));
+            [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
+        }
+        return shuffled;
+    }
+
+    document.getElementById('quizCategory').addEventListener('change', function() {
+        const hint = document.getElementById('categoryHint');
+        const questionCount = CATEGORY_QUESTION_COUNTS[this.value];
+        const tkaTokenGroup = document.getElementById('tkaTokenGroup');
+        const tkaTokenInput = document.getElementById('tkaToken');
+        const requiresTkaToken = this.value === CATEGORY_TKA;
+        hint.innerText = questionCount
+            ? `Soal tersedia: ${questionCount} pilihan ganda.`
+            : 'Soal untuk kategori ini belum tersedia.';
+        document.getElementById('questionCountText').innerText =
+            questionCount ? `${questionCount} Soal Pilihan Ganda` : '25 Soal Pilihan Ganda';
+        tkaTokenGroup.hidden = !requiresTkaToken;
+        tkaTokenInput.required = requiresTkaToken;
+        if (!requiresTkaToken) {
+            tkaTokenInput.value = '';
+        }
+    });
+
+    document.getElementById('toggleTkaToken').addEventListener('click', function() {
+        const tokenInput = document.getElementById('tkaToken');
+        const isVisible = tokenInput.type === 'text';
+        tokenInput.type = isVisible ? 'password' : 'text';
+        this.innerText = isVisible ? 'Lihat' : 'Sembunyikan';
+        this.setAttribute('aria-label', isVisible ? 'Lihat token' : 'Sembunyikan token');
+        this.setAttribute('aria-pressed', String(!isVisible));
+    });
+
+    document.getElementById('identityForm').addEventListener('reset', function() {
+        const tokenInput = document.getElementById('tkaToken');
+        const toggleButton = document.getElementById('toggleTkaToken');
+        tokenInput.type = 'password';
+        toggleButton.innerText = 'Lihat';
+        toggleButton.setAttribute('aria-label', 'Lihat token');
+        toggleButton.setAttribute('aria-pressed', 'false');
+    });
+
+    const container = document.getElementById('questionsContainer');
+    function renderQuestions() {
+        container.replaceChildren();
+        questionsData.forEach((q, idx) => {
+            const card = document.createElement('div');
+            card.className = `question-card ${idx === 0 ? 'active' : ''}`;
+            card.id = `qCard_${idx}`;
+
+            let optionsHtml = '';
+            q.opts.forEach((opt, optIdx) => {
+                const optLetter = String.fromCharCode(65 + optIdx);
+                optionsHtml += `
+                    <label class="option-label">
+                        <input type="radio" name="q${q.num}" value="${optLetter}">
+                        ${escapeHtml(opt.replace(/^[A-E]\.\s*/, ''))}
+                    </label>
+                `;
+            });
+
+            card.innerHTML = `
+                <div class="question-title">${escapeHtml(q.q.replace(/^\s*\d+[\.)]\s*/, ''))}</div>
+                ${optionsHtml}
+            `;
+            container.appendChild(card);
+        });
+    }
+
+    function escapeHtml(value) {
+        return value.replace(/[&<>"']/g, character => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        })[character]);
+    }
+
+    // Update Navigasi UI
+    function updateQuizUI() {
+        document.querySelectorAll('.question-card').forEach((card, idx) => {
+            card.classList.toggle('active', idx === currentQuestionIndex);
+        });
+
+        const total = questionsData.length;
+        document.getElementById('progressIndicator').innerText = `Soal ${currentQuestionIndex + 1} dari ${total}`;
+        const pct = ((currentQuestionIndex + 1) / total) * 100;
+        document.getElementById('progressBar').style.width = `${pct}%`;
+
+        document.getElementById('btnPrev').disabled = (currentQuestionIndex === 0);
+
+        if (currentQuestionIndex === total - 1) {
+            document.getElementById('btnNext').style.display = 'none';
+            document.getElementById('btnSubmit').style.display = 'flex';
+        } else {
+            document.getElementById('btnNext').style.display = 'flex';
+            document.getElementById('btnSubmit').style.display = 'none';
+        }
+    }
+
+    function changeQuestion(step) {
+        currentQuestionIndex += step;
+        updateQuizUI();
+    }
+
+    function startQuizTimer() {
+        const timerElement = document.getElementById('quizTimer');
+        const deadline = Date.now() + QUIZ_DURATION_SECONDS * 1000;
+
+        function updateTimer() {
+            const remainingSeconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+            const minutes = Math.floor(remainingSeconds / 60);
+            const seconds = remainingSeconds % 60;
+            timerElement.innerText = `Waktu tersisa: ${minutes}:${String(seconds).padStart(2, '0')}`;
+            timerElement.classList.toggle('timer-warning', remainingSeconds <= 5 * 60);
+
+            if (remainingSeconds === 0) {
+                clearInterval(quizTimerInterval);
+                document.getElementById('quizForm').requestSubmit();
+            }
+        }
+
+        updateTimer();
+        quizTimerInterval = setInterval(updateTimer, 1000);
+    }
+
+    function recordProctorIncident(type) {
+        proctorIncidents.push({
+            type: type,
+            timestamp: new Date().toISOString()
+        });
+        document.getElementById('proctorStatus').innerText =
+            `Pemantauan aktif · Pelanggaran: ${proctorIncidents.length}`;
+    }
+
+    function resetQuizForFocusLoss(message, incidentType) {
+        if (!quizActive) {
+            return;
+        }
+
+        recordProctorIncident(incidentType);
+        quizActive = false;
+        clearInterval(quizTimerInterval);
+        document.getElementById('quizForm').reset();
+        document.getElementById('identityForm').reset();
+        document.getElementById('quizSection').style.display = 'none';
+        document.getElementById('resultView').style.display = 'none';
+        document.getElementById('identityForm').style.display = 'block';
+        document.getElementById('quizResetNotice').innerText =
+            `${message} Pelanggaran tercatat: ${proctorIncidents.length}.`;
+        document.getElementById('quizResetNotice').hidden = false;
+
+        currentQuestionIndex = 0;
+        studentData = {};
+        const timerElement = document.getElementById('quizTimer');
+        timerElement.innerText = 'Waktu tersisa: 60:00';
+        timerElement.classList.remove('timer-warning');
+        updateQuizUI();
+
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function isAndroidSplitScreen() {
+        if (!/Android/i.test(navigator.userAgent)) {
+            return false;
+        }
+
+        const screenWidth = window.screen.availWidth;
+        const screenHeight = window.screen.availHeight;
+        const widthRatio = window.innerWidth / screenWidth;
+        const heightRatio = window.innerHeight / screenHeight;
+
+        return (
+            screenWidth > 0 &&
+            screenHeight > 0 &&
+            (widthRatio < ANDROID_SPLIT_SCREEN_THRESHOLD ||
+                heightRatio < ANDROID_SPLIT_SCREEN_THRESHOLD)
+        );
+    }
+
+    function resetQuizIfAndroidSplitScreen() {
+        if (quizActive && isAndroidSplitScreen()) {
+            resetQuizForFocusLoss(
+                'Kuis direset karena mode layar belah terdeteksi. Tutup layar belah lalu mulai kembali.',
+                'split-screen'
+            );
+        }
+    }
+
+    window.addEventListener('resize', function() {
+        if (!quizActive) {
+            return;
+        }
+
+        clearTimeout(splitScreenCheckTimeout);
+        splitScreenCheckTimeout = setTimeout(resetQuizIfAndroidSplitScreen, 300);
+    });
+
+    document.addEventListener('visibilitychange', function() {
+        if (quizActive && document.hidden) {
+            resetQuizForFocusLoss(
+                'Kuis direset karena Anda berpindah tab atau aplikasi. Silakan isi identitas untuk memulai kembali.',
+                'tab-hidden'
+            );
+        }
+    });
+
+    window.addEventListener('blur', function() {
+        if (quizActive) {
+            resetQuizForFocusLoss(
+                'Kuis direset karena jendela kuis kehilangan fokus. Silakan isi identitas untuk memulai kembali.',
+                'window-blur'
+            );
+        }
+    });
+
+    // Form Identitas Submit
+    document.getElementById('identityForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        document.getElementById('quizResetNotice').hidden = true;
+
+        const selectedCategory = document.getElementById('quizCategory').value;
+        if (!CATEGORY_QUESTION_COUNTS[selectedCategory]) {
+            document.getElementById('quizResetNotice').innerText = 'Soal untuk kategori ini belum tersedia. Silakan pilih kategori lain.';
+            document.getElementById('quizResetNotice').hidden = false;
+            return;
+        }
+
+        const submitButton = document.querySelector('#identityForm button[type="submit"]');
+        submitButton.disabled = true;
+        submitButton.innerText = 'Memuat soal...';
+
+        try {
+            const tkaToken = document.getElementById('tkaToken').value.trim();
+            const response = await getQuizQuestions(selectedCategory, tkaToken);
+            if (!Array.isArray(response.questions) || response.questions.length !== CATEGORY_QUESTION_COUNTS[selectedCategory]) {
+                throw new Error('Data soal dari server tidak lengkap.');
+            }
+
+            questionsData = shuffledQuestions(response.questions);
+            currentQuestionIndex = 0;
+            renderQuestions();
+
+            studentData = {
+                nama: document.getElementById('studentName').value,
+                kelas: document.getElementById('studentClass').value,
+                kategori: selectedCategory,
+                tkaToken: selectedCategory === CATEGORY_TKA ? tkaToken : ''
+            };
+            document.getElementById('subjectLabel').innerText = `Kategori: ${selectedCategory}`;
+            document.getElementById('proctorStatus').innerText =
+                `Pemantauan aktif · Pelanggaran: ${proctorIncidents.length}`;
+
+            quizActive = true;
+            document.getElementById('identityForm').style.display = 'none';
+            document.getElementById('quizSection').style.display = 'block';
+            if (isAndroidSplitScreen()) {
+                resetQuizIfAndroidSplitScreen();
+                return;
+            }
+            updateQuizUI();
+            startQuizTimer();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        } catch (error) {
+            document.getElementById('quizResetNotice').innerText = error.message || 'Gagal mengambil soal dari server.';
+            document.getElementById('quizResetNotice').hidden = false;
+            if (selectedCategory === CATEGORY_TKA) {
+                document.getElementById('tkaToken').focus();
+            }
+        } finally {
+            submitButton.disabled = false;
+            submitButton.innerText = 'Mulai Mengerjakan ➔';
+        }
+    });
+
+    // Submit Kuis & Tampilkan Hasil Ringkas
+    document.getElementById('quizForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        quizActive = false;
+        clearInterval(quizTimerInterval);
+
+        const answers = {};
+
+        questionsData.forEach(q => {
+            const selected = document.querySelector(`input[name="q${q.num}"]:checked`);
+            const userAnsLetter = selected ? selected.value : '-';
+            answers[String(q.num)] = userAnsLetter;
+        });
+
+        document.getElementById('finalScoreVal').innerText = '...';
+        document.getElementById('correctRatioVal').innerText = `... / ${questionsData.length}`;
+        document.getElementById('quizSection').style.display = 'none';
+        document.getElementById('resultView').style.display = 'block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+        const payload = {
+            nama: studentData.nama,
+            kelas: studentData.kelas,
+            kategori: studentData.kategori,
+            tkaToken: studentData.tkaToken,
+            requestId: createQuizRequestId(),
+            answers: answers,
+            proctorIncidents: proctorIncidents,
+        };
+
+        document.getElementById('statusMessage').innerText = 'Mengirim jawaban dan menunggu penilaian server...';
+        sendQuizResultToGoogleSheets(payload)
+        .then(result => {
+            document.getElementById('finalScoreVal').innerText = result.nilai;
+            document.getElementById('correctRatioVal').innerText = `${result.benar} / ${result.totalSoal}`;
+            document.getElementById('statusMessage').innerText = 'Nilai dihitung di server dan hasil berhasil disimpan ke Google Spreadsheet.';
+        })
+        .catch(err => {
+            document.getElementById('finalScoreVal').innerText = '—';
+            document.getElementById('correctRatioVal').innerText = `— / ${questionsData.length}`;
+            document.getElementById('statusMessage').innerText = `Gagal mengirim atau menilai kuis: ${err.message || err}`;
+            document.getElementById('statusMessage').style.color = "#b91c1c";
+        });
+    });
